@@ -1,4 +1,4 @@
-import { captureSource, sourceIsCurrent, saveGeneratedImage, createGallery } from './gallery.js';
+import { captureSource, sourceIsCurrent, saveGeneratedImage, listImages, createGallery } from './gallery.js';
 import { createEntries } from './entry.js';
 import * as tavern from './tavern.js';
 import { defaultSettings, DEFAULT_MAIN_PROMPT, DEFAULT_REFERENCE_PROMPT_TEMPLATE, IMAGE_PROMPT_WORDING_RULES, CONTEXT_SECTIONS, createDefaultProfiles, createDefaultProfileFor } from './defaults.js';
@@ -1127,6 +1127,7 @@ async function updateMessageWithImage(messageId, cleanedMessage, imageUrls) {
 }
 
 async function processPromptToImage(prompt, options = {}) {
+  if (state.currentRun) throw new Error('Image Hub 正在生成图片，请等待当前任务完成');
   const runStarted = performance.now();
   const startedAt = new Date().toISOString();
   const source = options.sourceSnapshot ?? captureSource(options.messageId);
@@ -1212,6 +1213,7 @@ async function processPromptToImage(prompt, options = {}) {
       totalMs: Math.round(totalMs),
     });
     return {
+      records,
       imageUrl: first.url,
       elapsedMs: totalMs,
       referenceCharacters: referenceContext.characters.map(item => item.name),
@@ -1229,6 +1231,8 @@ async function processPromptToImage(prompt, options = {}) {
       totalMs: Math.round(totalMs),
     });
     throw error;
+  } finally {
+    state.currentRun = null;
   }
 }
 
@@ -3269,6 +3273,18 @@ export async function init() {
 
   await refreshReferenceImages();
 
+  // Publish only after settings and reference images are ready. This Promise owns
+  // generation and saving even when its caller leaves the phone page or panel.
+  W.ST_IMAGE_HUB_API = {
+    version: 1,
+    listImages,
+    async generate({ prompt }) {
+      if (typeof prompt !== 'string' || !prompt.trim()) throw new Error('绘图提示词必须为非空字符串');
+      const result = await processPromptToImage(prompt.trim(), { previewOnly: true });
+      return result.records;
+    },
+  };
+
   setStatus('就绪', 'info');
   addLog('info', 'Image Hub 已启动', {
     integration: 'SillyTavern native extension',
@@ -3284,6 +3300,7 @@ export async function init() {
 }
 
 function destroy(reason = 'manual') {
+  delete W.ST_IMAGE_HUB_API;
   try {
     tavern.uninjectPrompts([INJECT_ID]);
   } catch {

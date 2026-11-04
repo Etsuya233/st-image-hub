@@ -126,3 +126,19 @@ Prompt 内容支持酒馆宏（`{{char}}`、`{{user}}`、`{{getvar::名字}}`、
 每张图片对应一个 `user/files/open-image2-<图片ID>.json`，记录来源聊天与楼层内容、Persona 名称/描述、角色卡快照、原始和提交 Prompt、生成时间、请求耗时、保存前流程耗时、保存时累计耗时、请求次数、模型/尺寸和参考图信息。记录不包含图片 API 认证头或密钥。角色卡和聊天快照可能包含私人内容，请按聊天资料管理这些文件。
 
 “生成图库”独立 Tab 支持 Persona、角色卡与本地生成日期范围组合筛选，筛选会显示成可单独取消的标签。缩略图按本地日期分组（今天、昨天、具体日期），图上标出参考图数量与生成耗时；点击缩略图打开大图，来源聊天、角色卡、耗时、Prompt 与完整元数据在同一层里查看，也可以用“打开原图”下载。刷新图库会重新从 ST 读取文件。生成期间切换聊天或切换来源楼层的 swipe 时，结果保存到图库并跳过聊天写回。远程图片 URL 需要允许浏览器跨域下载；下载或保存失败会在状态中显示错误。元数据保存失败时，已保存的图片路径会出现在错误消息中，图库会明确报告缺失记录。
+
+## Phone 联动 API
+
+扩展初始化并读完参考图库后公开 `window.ST_IMAGE_HUB_API`，面板保持关闭时也可调用。调用前检查该对象是否存在；未安装、尚未初始化或初始化失败时，该对象不可用。
+
+```js
+const hub = window.ST_IMAGE_HUB_API; // version: 1
+const images = await hub.listImages();
+const generated = await hub.generate({ prompt: 'Alice 在花园里喝茶' });
+```
+
+`listImages(): Promise<ImageRecord[]>` 每次直接读取 ST 的 `open-image2` 图片目录及配套 JSON，按 `startedAt` 从新到旧返回全部记录，沿用生成图库的存储和读取规则。目录或元数据读取失败时 Promise 拒绝，不返回缺失元数据的半份列表。
+
+`generate({ prompt: string }): Promise<ImageRecord[]>` 接受非空的用户绘图描述，直接使用当前已保存的图片服务设置，并按描述中的角色名和别名自动匹配参考图；不提取聊天上下文、不调用提示词整理、不修改 ST 聊天正文。后端一次返回多张图时，全部图片及元数据保存完成后返回本批完整记录。每条记录至少包含 `id`、`imagePath`、`prompt`、`startedAt`、`savedAt`，并保留 `source`、`submittedPrompt`、`parameters`、`references` 与耗时等现有元数据。`imagePath` 为可直接展示的 ST 图片地址。
+
+API、面板测试和自动生图共用生成忙状态，已有图片任务时新任务会明确拒绝，成功或失败后释放忙状态。关闭面板、返回手机 Home 或离开手机生图页面不会取消任务；调用方可以停止展示迟到结果，Image Hub 仍继续保存资产。API 没有订阅、同步或取消接口；调用方需要刷新图库时重新调用 `listImages()`。生成或保存失败时 Promise 拒绝；多图保存中途失败前已成功保存的资产保留，可从图库重新读取。

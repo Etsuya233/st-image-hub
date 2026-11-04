@@ -54,6 +54,22 @@ export async function saveGeneratedImage(url, metadata) {
     return record;
 }
 
+/** Read persisted ST assets without depending on the gallery panel or its filters. */
+export async function listImages() {
+    const response = await fetch('/api/images/list', { method: 'POST', headers: SillyTavern.getContext().getRequestHeaders(),
+        body: JSON.stringify({ folder, sortField: 'date', sortOrder: 'desc' }) });
+    if (!response.ok) throw new Error(`读取图片目录失败：${response.status}`);
+    const names = await response.json();
+    const records = await Promise.all(names.map(async name => {
+        const id = name.substring(0, name.lastIndexOf('.'));
+        const metadata = await fetch(`/user/files/open-image2-${id}.json`, { cache: 'no-store' });
+        if (!metadata.ok) throw new Error(`图片 ${name} 的元数据读取失败：${metadata.status}`);
+        return metadata.json();
+    }));
+    records.sort((a, b) => new Date(b.startedAt) - new Date(a.startedAt));
+    return records;
+}
+
 const DAY_MS = 86400000;
 
 function localDayKey(value) {
@@ -290,17 +306,7 @@ export function createGallery(root, { openLightbox } = {}) {
                 box.replaceChildren(grid);
             }
             try {
-                const response = await fetch('/api/images/list', { method: 'POST', headers: SillyTavern.getContext().getRequestHeaders(),
-                    body: JSON.stringify({ folder, sortField: 'date', sortOrder: 'desc' }) });
-                if (!response.ok) throw new Error(`读取图片目录失败：${response.status}`);
-                const names = await response.json();
-                records = await Promise.all(names.map(async name => {
-                    const id = name.substring(0, name.lastIndexOf('.'));
-                    const metadata = await fetch(`/user/files/open-image2-${id}.json`, { cache: 'no-store' });
-                    if (!metadata.ok) throw new Error(`图片 ${name} 的元数据读取失败：${metadata.status}`);
-                    return metadata.json();
-                }));
-                records.sort((a, b) => new Date(b.startedAt) - new Date(a.startedAt));
+                records = await listImages();
                 loaded = true;
                 updateOptions();
                 render();
