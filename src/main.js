@@ -2091,7 +2091,7 @@ async function importReferenceLibrary(file) {
   let imageCount = 0;
   for (const source of Array.isArray(payload.images) ? payload.images : []) {
     const characterId = idMap.get(String(source.characterId || ''));
-    if (!characterId || !isDataImageUrl(source.dataUrl)) continue;
+    if (!characterId || !/^data:image\/[^;]+;base64,/i.test(source.dataUrl)) continue;
     const maxBytes = Math.max(1, Number(state.settings.referenceMaxImageMB) || 8) * 1024 * 1024;
     if (String(source.dataUrl).length > maxBytes * 1.5) continue;
     const record = {
