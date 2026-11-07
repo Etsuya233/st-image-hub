@@ -4,6 +4,6 @@
   "type": "module",
   "scripts": {
     "test": "node --test",
-    "check": "node --check index.js && node --check src/main.js && node --check src/defaults.js && node --check src/tavern.js && node --check src/gallery.js && node --check src/entry.js"
+    "check": "node --check index.js && node --check src/main.js && node --check src/defaults.js && node --check src/tavern.js && node --check src/gallery.js && node --check src/entry.js && node --check src/generation-config.js && node --check src/generation-config-ui.js"
   }
 }

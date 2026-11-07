@@ -55,6 +55,12 @@
       </div>
     </div>
     <div class="oair-field">
+      <label>自定义请求头</label>
+      <div id="oair_image_headers"></div>
+      <div class="oair-btn-row"><button id="oair_header_add" class="oair-btn secondary" type="button">添加请求头</button></div>
+      <div class="oair-help">同名请求头忽略大小写并覆盖自动值。API 密钥自动生成 Bearer 鉴权；multipart 图生图请勿设置 Content-Type，由浏览器生成上传 boundary。</div>
+    </div>
+    <div class="oair-field">
       <label>超时（毫秒）</label>
       <input data-oair-setting="timeoutMs" type="number" min="1000" step="1000">
     </div>
@@ -102,6 +108,21 @@
       <textarea data-oair-setting="extraBody" rows="3" placeholder='{"size":"1024x1024"}'></textarea>
     </div>
     <div class="oair-help">如果服务地址包含 /chat/completions，脚本会自动用 messages 请求体；否则用 images/generations 的 prompt 请求体。返回会优先解析 data/media/url/b64_json，再用下面的图片正则回退。</div>
+    <div class="oair-btn-row">
+      <button id="oair_backend_save" class="oair-btn" type="button">保存设置</button>
+      <button id="oair_config_export" class="oair-btn secondary" type="button">导出生图配置</button>
+      <button id="oair_config_import" class="oair-btn secondary" type="button">导入生图配置</button>
+      <input id="oair_config_file" type="file" accept="application/json,.json" hidden>
+    </div>
+    <label class="oair-check"><input id="oair_config_secrets" type="checkbox" checked>导出时包含密钥和请求头</label>
+    <div class="oair-help">勾选时文件包含明文 API 密钥和全部自定义请求头。取消勾选后省略这两项，导入时保留设备上已有的值。配置包含生图和图生图参数，不含提示词整理 API、预设和参考图库。</div>
+    <div id="oair_config_preview" hidden>
+      <div id="oair_config_summary" class="oair-help" role="status" aria-live="polite"></div>
+      <div class="oair-btn-row">
+        <button id="oair_config_apply" class="oair-btn" type="button">应用配置</button>
+        <button id="oair_config_cancel" class="oair-btn secondary" type="button">取消</button>
+      </div>
+    </div>
   </div>
 
   <div class="oair-section" data-oair-section="extraction">

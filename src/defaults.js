@@ -144,6 +144,7 @@ export const defaultSettings = {
 
   serviceUrl: 'http://127.0.0.1:8199/v1/images/generations',
   apiKey: 'sk-any',
+  headers: [],
   model: 'gpt-image-2',
   timeoutMs: 600000,
   normalizeImagePrompt: false,

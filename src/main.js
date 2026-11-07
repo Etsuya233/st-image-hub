@@ -1,5 +1,7 @@
 import { captureSource, sourceIsCurrent, saveGeneratedImage, listImages, createGallery } from './gallery.js';
 import { createEntries } from './entry.js';
+import { imageRequestHeaders, settingsWithGenerationConfig } from './generation-config.js';
+import { createGenerationConfigControls } from './generation-config-ui.js';
 import * as tavern from './tavern.js';
 import { defaultSettings, DEFAULT_MAIN_PROMPT, DEFAULT_REFERENCE_PROMPT_TEMPLATE, IMAGE_PROMPT_WORDING_RULES, CONTEXT_SECTIONS, createDefaultProfiles, createDefaultProfileFor } from './defaults.js';
 
@@ -33,6 +35,7 @@ const state = {
   currentRun: null,
   panel: null,
   entries: null,
+  generationConfigControls: null,
   uiWindow: null,
   uiDocument: null,
   steps: new Map(),
@@ -114,7 +117,9 @@ function sanitize(value, depth = 0) {
 
   const out = {};
   for (const [key, item] of Object.entries(value)) {
-    if (/api.?key|authorization|bearer|token|password|secret|key$/i.test(key)) {
+    if (/^headers$/i.test(key)) {
+      out[key] = '[请求头内容已隐藏]';
+    } else if (/api.?key|authorization|bearer|token|password|secret|key$/i.test(key)) {
       out[key] = maskSecret(item);
     } else {
       out[key] = sanitize(item, depth + 1);
@@ -677,7 +682,6 @@ function buildImageRequest(prompt, referenceContext = { characters: [], images: 
   let body;
   let fetchBody;
   let bodyForLog;
-  const headers = {};
 
   if (mode === 'multipart-edit') {
     const form = new FormData();
@@ -734,7 +738,6 @@ function buildImageRequest(prompt, referenceContext = { characters: [], images: 
     };
     fetchBody = JSON.stringify(body);
     bodyForLog = body;
-    headers['Content-Type'] = 'application/json';
   } else {
     const isChatEndpoint = /\/chat\/completions(?:\?|$|\/)?/i.test(url);
     const baseBody = isChatEndpoint
@@ -757,10 +760,9 @@ function buildImageRequest(prompt, referenceContext = { characters: [], images: 
     }
     fetchBody = JSON.stringify(body);
     bodyForLog = body;
-    headers['Content-Type'] = 'application/json';
   }
 
-  if (settings.apiKey) headers.Authorization = `Bearer ${settings.apiKey}`;
+  const headers = imageRequestHeaders(settings, mode);
 
   return {
     url,
@@ -1353,7 +1355,7 @@ async function onMessageReceived(messageIdLike, ...args) {
   }
 }
 
-function getSettingsFromUi() {
+function readPanelSettings() {
   const next = { ...state.settings };
   qa('[data-oair-setting]').forEach(el => {
     const key = el.dataset.oairSetting;
@@ -1368,7 +1370,13 @@ function getSettingsFromUi() {
       next[key] = el.value;
     }
   });
-  state.settings = { ...defaultSettings, ...next };
+  next.headers = state.generationConfigControls.readHeaders();
+  return next;
+}
+
+function getSettingsFromUi() {
+  const next = readPanelSettings();
+  state.settings = settingsWithGenerationConfig(next, { headers: next.headers });
   applyImagePromptWordingRules();
   return state.settings;
 }
@@ -1516,6 +1524,7 @@ function migratePromptHandlingSettings() {
 }
 
 function writeSettingsToUi() {
+  state.generationConfigControls.writeHeaders(state.settings.headers);
   qa('[data-oair-setting]').forEach(el => {
     const key = el.dataset.oairSetting;
     if (!key) return;
@@ -1545,18 +1554,20 @@ function loadSettings() {
 }
 
 function saveSettings(options = {}) {
-  getSettingsFromUi();
   try {
+    getSettingsFromUi();
     tavern.saveSettings(state.settings);
     if (!options.silent) {
       addLog('info', '设置已保存', { settings: state.settings });
       setStatus('设置已保存', 'ok');
       notify('success', 'Image Hub 设置已保存');
     }
+    return true;
   } catch (error) {
     addLog('error', '保存设置失败', { error: error.message, stack: error.stack });
     setStatus(`保存失败：${error.message}`, 'error');
     notify('error', `保存失败：${error.message}`);
+    return false;
   }
 }
 
@@ -1603,7 +1614,7 @@ function logTestFailure(error) {
 }
 
 async function runImageTest() {
-  saveSettings();
+  if (!saveSettings()) return;
   const input = q('#oair_test_prompt');
   let prompt = input?.value?.trim() || '';
   if (!prompt) {
@@ -1625,7 +1636,7 @@ async function runImageTest() {
 }
 
 function runExtractPromptFromMessage() {
-  saveSettings();
+  if (!saveSettings()) return;
   try {
     const extracted = readTestFloorPrompt();
     const input = q('#oair_test_prompt');
@@ -1890,7 +1901,7 @@ function generatePromptFromContext({ sourceMessage = '', historyEndId = null } =
 }
 
 async function runContextPromptOnly() {
-  saveSettings();
+  if (!saveSettings()) return;
   let floor;
   try {
     floor = readTestFloor();
@@ -3147,6 +3158,19 @@ function makeUi() {
   });
   state.entries.apply(state.settings.entryPoint);
 
+  state.generationConfigControls = createGenerationConfigControls(panel, {
+    readSettings: getSettingsFromUi,
+    applyConfig: config => {
+      const next = settingsWithGenerationConfig(readPanelSettings(), config);
+      tavern.saveSettings(next);
+      state.settings = next;
+      writeSettingsToUi();
+      renderReferenceMatchPreview();
+    },
+    download: downloadTextFile,
+    setStatus,
+  });
+  state.disposers.push(() => state.generationConfigControls.dispose());
   renderPromptProfileEditor();
   writeSettingsToUi();
   resetSteps();
@@ -3165,6 +3189,7 @@ function makeUi() {
 
   bindDom('#oair_btn_close', 'click', () => setPanelVisible(false));
   bindDom('#oair_btn_save', 'click', saveSettings);
+  bindDom('#oair_backend_save', 'click', saveSettings);
   qa('[data-oair-tab]').forEach(button => {
     const handler = () => switchPanelTab(button.dataset.oairTab);
     button.addEventListener('click', handler);

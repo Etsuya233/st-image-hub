@@ -118,6 +118,14 @@
 .oair-grid-3 { display:grid; grid-template-columns: 1fr 1fr 1fr; gap:8px; }
 .oair-field { display:grid; gap:4px; }
 .oair-field label, .oair-check { font-size:12px; color: rgba(233,238,245,.82); }
+#oair_image_headers { display: grid; gap: 6px; }
+.oair-header-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) auto; gap: 6px; }
+.oair-header-row input { min-width: 0; }
+#oair_config_summary { white-space: pre-wrap; overflow-wrap: anywhere; margin: 8px 0; }
+@media (max-width: 600px) {
+  .oair-header-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .oair-header-row input:first-child { grid-column: 1 / -1; }
+}
 .oair-field input, .oair-field textarea, .oair-field select,
 .oair-prompt-name, .oair-prompt-role, .oair-prompt-content {
   width:100%;
