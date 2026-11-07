@@ -2815,8 +2815,6 @@ function setPanelVisible(visible) {
   if (visible) syncPanelLayout();
 }
 
-// 自定义酒馆可能换掉了栏位 id，按常见顺序取第一个真正占位的元素。
-const TAVERN_BOTTOM_BAR_IDS = ['send-form', 'send_form', 'form_sheld'];
 const PANEL_MIN_WIDTH = 320;
 const PANEL_MIN_HEIGHT = 240;
 
@@ -2832,23 +2830,6 @@ function useFullscreenPanelLayout() {
   }
   const narrow = win.matchMedia?.('(max-width: 1000px)').matches ?? win.innerWidth <= 1000;
   return stMobile === null ? narrow : stMobile || narrow;
-}
-
-function measureTavernBarSpace() {
-  const doc = uiDoc();
-  const win = state.uiWindow || W;
-  const topBar = doc.getElementById('top-bar');
-  const top = topBar ? Math.max(0, topBar.getBoundingClientRect().bottom) : 0;
-  let bottom = 0;
-  for (const id of TAVERN_BOTTOM_BAR_IDS) {
-    const bar = doc.getElementById(id);
-    if (!bar) continue;
-    const rect = bar.getBoundingClientRect();
-    if (rect.height <= 0) continue;
-    bottom = Math.max(0, win.innerHeight - rect.top);
-    break;
-  }
-  return { top, bottom };
 }
 
 function clampPanelPosition(position) {
@@ -2894,18 +2875,15 @@ function syncPanelLayout() {
   if (!panel) return;
   const win = state.uiWindow || W;
   if (useFullscreenPanelLayout()) {
-    const { top, bottom } = measureTavernBarSpace();
+    const viewport = win.visualViewport;
     panel.classList.add('oair-panel-fullscreen');
     panel.classList.remove('oair-panel-moved');
-    panel.style.left = '';
-    panel.style.top = top > 0 ? `${top}px` : '';
-    panel.style.bottom = bottom > 0 ? `${bottom}px` : '';
-    // 页面根元素带 transform 时，fixed 元素靠 top/bottom 拉伸会失效，高度按测到的栏位直接算；
-    // 两条栏位都没测到时清掉高度，交回 CSS 的 env(safe-area-inset-*) 定位。
-    panel.style.height = top > 0 || bottom > 0
-      ? `${Math.max(PANEL_MIN_HEIGHT, win.innerHeight - top - bottom)}px`
-      : '';
-    panel.style.width = '';
+    // iPhone 键盘会缩小、平移可视视口，ST 底栏可能滞后；直接跟随视口才能在收起键盘后恢复。
+    panel.style.left = `${viewport.offsetLeft}px`;
+    panel.style.top = `${viewport.offsetTop}px`;
+    panel.style.bottom = '';
+    panel.style.height = `${viewport.height}px`;
+    panel.style.width = `${viewport.width}px`;
     return;
   }
   panel.classList.remove('oair-panel-fullscreen');

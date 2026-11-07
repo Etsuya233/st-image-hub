@@ -38,14 +38,12 @@
 .oair-panel-body { height: 100%; overflow: auto; border-radius: inherit; overscroll-behavior: contain; }
 /* 拖拽窗口后改用 left/top 像素定位，取消居中偏移 */
 #oair_panel.oair-panel-moved { transform: none; }
-/* 移动端铺满：上下边界由脚本按酒馆顶栏/底栏位置写入；没测到栏位时退回 env() 安全区 */
+/* 移动端覆盖完整可视视口，包含酒馆工具栏和输入框；安全区只留在面板内容内。 */
 #oair_panel.oair-panel-fullscreen {
+  box-sizing: border-box;
   left: 0;
-  right: 0;
-  top: env(safe-area-inset-top, 0px);
-  bottom: env(safe-area-inset-bottom, 0px);
-  width: auto;
-  height: auto;
+  top: 0;
+  padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
   max-height: none;
   transform: none;
   border-radius: 0;
