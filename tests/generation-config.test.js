@@ -120,3 +120,33 @@ test('实际请求组装使用自定义鉴权和参考图，multipart 正文保�
   const encoded = new Request('https://example.com', { method: 'POST', headers: request.headers, body: request.fetchBody });
   assert.match(encoded.headers.get('content-type'), /^multipart\/form-data; boundary=/);
 });
+
+test('自动识别 edits 接口，多张参考图使用数组字段上传', async () => {
+  const current = settings();
+  current.referenceRequestMode = 'auto';
+  current.referenceServiceUrl = 'https://api.openai.com/v1/images/edits';
+  const context = vm.createContext({
+    state: { settings: current }, imageRequestHeaders, FormData,
+    normalizeImagePromptForBackend: prompt => ({ backendPrompt: prompt }),
+    fillPromptTemplate: (_template, prompt) => prompt,
+    parseJsonLoose: text => text ? JSON.parse(text) : {},
+    dataUrlToBlob: dataUrl => new Blob([dataUrl], { type: 'image/png' }),
+    referenceFileName: filename => filename,
+  });
+  vm.runInContext(requestCode, context);
+  const request = vm.runInContext(`buildImageRequest("draw", {
+    characters: [],
+    images: [
+      { dataUrl: "first-image", fileName: "first.png" },
+      { dataUrl: "second-image", fileName: "second.png" },
+    ],
+  })`, context);
+  assert.equal(request.url, current.referenceServiceUrl);
+  const encoded = new Request(request.url, { method: 'POST', headers: request.headers, body: request.fetchBody });
+  const form = await encoded.formData();
+  assert.equal(form.getAll('image').length, 0, '多图不能重复提交单值 image 参数');
+  const images = form.getAll('image[]');
+  assert.equal(images.length, 2);
+  assert.deepEqual(images.map(image => image.name), ['first.png', 'second.png']);
+  assert.deepEqual(await Promise.all(images.map(image => image.text())), ['first-image', 'second-image']);
+});

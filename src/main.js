@@ -693,6 +693,8 @@ function buildImageRequest(prompt, referenceContext = { characters: [], images: 
       if (value == null) continue;
       form.append(key, typeof value === 'object' ? JSON.stringify(value) : String(value));
     }
+    // 多图使用数组字段，避免官方 API 将重复的 image 视为单值参数冲突。
+    const imageField = referenceContext.images.length > 1 ? 'image[]' : 'image';
     referenceContext.images.forEach((image, index) => {
       const blob = dataUrlToBlob(image.dataUrl);
       const filename = referenceFileName(
@@ -700,7 +702,7 @@ function buildImageRequest(prompt, referenceContext = { characters: [], images: 
         image.mimeType || blob.type,
         `${image.characterName || 'reference'}-${index + 1}`,
       );
-      form.append('image', blob, filename);
+      form.append(imageField, blob, filename);
     });
     fetchBody = form;
     bodyForLog = {
