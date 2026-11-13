@@ -2804,7 +2804,7 @@ function renderReferenceMatchPreview() {
 
 function switchPanelTab(tabName) {
   state.activeTab = tabName;
-  if (!generatedGallery) generatedGallery = createGallery(state.panel, { openLightbox: openImageLightbox });
+  if (!generatedGallery) generatedGallery = createGallery(state.panel, { openLightbox: openImageLightbox, setStatus });
   state.panel.dataset.oairTab = tabName;
   if (tabName === 'gallery') generatedGallery.load().catch(error => setStatus(error.message, 'error'));
   qa('[data-oair-tab]').forEach(button => {
@@ -3146,7 +3146,7 @@ function makeUi() {
   enablePanelDrag();
   enablePanelResize();
   bindPanelLayout();
-  generatedGallery = createGallery(panel, { openLightbox: openImageLightbox });
+  generatedGallery = createGallery(panel, { openLightbox: openImageLightbox, setStatus });
 
   state.entries = createEntries({
     doc,
@@ -3229,6 +3229,21 @@ function makeUi() {
   bindDom('#oair_btn_test', 'click', () => runWithButtonBusy('#oair_btn_test', '生成中...', runImageTest));
   bindDom('#oair_btn_context_prompt', 'click', () => runWithButtonBusy('#oair_btn_context_prompt', '整理中...', runContextPromptOnly));
   bindDom('#oair_btn_extract_prompt', 'click', () => runWithButtonBusy('#oair_btn_extract_prompt', '提取中...', runExtractPromptFromMessage));
+  const clearTestInputs = () => {
+    q('#oair_test_message').value = '';
+    q('#oair_test_prompt').value = '';
+    renderReferenceMatchPreview();
+  };
+  bindDom('#oair_btn_clear_test', 'click', clearTestInputs);
+  bindDom('#oair_btn_paste_test', 'click', () => runWithButtonBusy('#oair_btn_paste_test', '读取中...', async () => {
+    clearTestInputs();
+    try {
+      q('#oair_test_prompt').value = await navigator.clipboard.readText();
+      renderReferenceMatchPreview();
+    } catch (error) {
+      setStatus(`读取剪贴板失败：${error.message}`, 'error');
+    }
+  }));
   bindDom('#oair_gallery_refresh', 'click', event => {
     event.preventDefault();
     event.stopPropagation();

@@ -247,6 +247,8 @@
       <button id="oair_btn_test" class="oair-btn" type="button">运行生图测试</button>
       <button id="oair_btn_context_prompt" class="oair-btn secondary" type="button">从上下文生成提示词</button>
       <button id="oair_btn_extract_prompt" class="oair-btn secondary" type="button">从上下文中提取提示词</button>
+      <button id="oair_btn_clear_test" class="oair-btn secondary" type="button">清空</button>
+      <button id="oair_btn_paste_test" class="oair-btn secondary" type="button">剪贴板</button>
     </div>
   </div>
 
@@ -280,6 +282,10 @@
         <label class="oair-field">日期至<input type="date" id="oair_gallery_to" data-gallery-filter></label>
       </div>
       <div id="oair_gallery_chips" class="oair-gallery-chips" hidden></div>
+      <div class="oair-btn-row oair-gallery-selection">
+        <label><input id="oair_gallery_select_all" type="checkbox" disabled> 全选</label>
+        <button id="oair_gallery_download" class="oair-btn secondary" type="button" disabled>下载所选</button>
+      </div>
       <div id="oair_generated_gallery"></div>
     </div>
   </div>

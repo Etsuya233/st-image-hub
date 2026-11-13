@@ -116,10 +116,21 @@ function groupByDay(records) {
     return [...groups.values()].sort((a, b) => (a.key < b.key ? 1 : -1));
 }
 
-export function createGallery(root, { openLightbox } = {}) {
+export function createGallery(root, { openLightbox, setStatus }) {
     const find = selector => root.querySelector(selector);
+    const selectAll = find('#oair_gallery_select_all');
+    const download = find('#oair_gallery_download');
+    const selected = new Set();
     let records = [];
+    let visibleRecords = [];
     let loaded = false;
+    const updateSelectionControls = () => {
+        selectAll.disabled = visibleRecords.length === 0;
+        selectAll.checked = selected.size > 0 && selected.size === visibleRecords.length;
+        selectAll.indeterminate = selected.size > 0 && !selectAll.checked;
+        download.disabled = selected.size === 0;
+        download.textContent = selected.size ? `下载所选（${selected.size}）` : '下载所选';
+    };
     const activeFilters = () => ({
         persona: find('#oair_gallery_persona').value,
         character: find('#oair_gallery_character').value,
@@ -167,17 +178,16 @@ export function createGallery(root, { openLightbox } = {}) {
         image.loading = 'lazy';
         image.addEventListener('error', () => thumb.classList.add('is-broken'));
         thumb.append(image);
+        const metadata = [];
         const references = record.references?.length ?? 0;
-        if (references) {
-            const badge = document.createElement('span');
-            badge.className = 'oair-thumb-ref';
-            badge.textContent = `参考 ×${references}`;
-            thumb.append(badge);
-        }
+        if (references) metadata.push(`参考 ×${references}`);
         if (record.generationMs != null && Number.isFinite(Number(record.generationMs))) {
+            metadata.push(`${(Number(record.generationMs) / 1000).toFixed(1)}s`);
+        }
+        if (metadata.length) {
             const badge = document.createElement('span');
-            badge.className = 'oair-thumb-elapsed';
-            badge.textContent = `${(Number(record.generationMs) / 1000).toFixed(1)}s`;
+            badge.className = 'oair-thumb-metadata';
+            badge.textContent = metadata.join(' · ');
             thumb.append(badge);
         }
         const hint = document.createElement('span');
@@ -195,7 +205,22 @@ export function createGallery(root, { openLightbox } = {}) {
         caption.append(name, time);
         tile.append(thumb, caption);
         tile.addEventListener('click', () => openDetails(record));
-        return tile;
+        const card = document.createElement('div');
+        card.className = 'oair-gallery-card';
+        const selection = document.createElement('label');
+        selection.className = 'oair-tile-selection';
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.checked = selected.has(record.id);
+        checkbox.setAttribute('aria-label', `选择图片：${tile.title}`);
+        checkbox.addEventListener('change', () => {
+            if (checkbox.checked) selected.add(record.id);
+            else selected.delete(record.id);
+            updateSelectionControls();
+        });
+        selection.append(checkbox);
+        card.append(tile, selection);
+        return card;
     };
     const emptyBox = (text, withClear) => {
         const box = document.createElement('div');
@@ -240,25 +265,30 @@ export function createGallery(root, { openLightbox } = {}) {
     };
     const render = () => {
         const { persona, character, from, to } = activeFilters();
-        const filtered = records.filter(record => {
+        visibleRecords = records.filter(record => {
             const day = localDayKey(record.startedAt);
             return (!persona || record.source?.persona?.id === persona)
                 && (!character || (record.source?.characters ?? []).some(item => item.id === character))
                 && (!from || (day && day >= from))
                 && (!to || (day && day <= to));
         });
-        find('#oair_gallery_count').textContent = filtered.length === records.length
-            ? String(records.length) : `${filtered.length} / ${records.length}`;
+        const visibleIds = new Set(visibleRecords.map(record => record.id));
+        for (const id of selected) {
+            if (!visibleIds.has(id)) selected.delete(id);
+        }
+        updateSelectionControls();
+        find('#oair_gallery_count').textContent = visibleRecords.length === records.length
+            ? String(records.length) : `${visibleRecords.length} / ${records.length}`;
         renderChips();
         const box = find('#oair_generated_gallery');
         box.replaceChildren();
-        if (!filtered.length) {
+        if (!visibleRecords.length) {
             box.append(records.length
                 ? emptyBox('没有符合筛选条件的图片。', true)
                 : emptyBox('图库还是空的。到「生图与设置」跑一次生图测试，或让角色正常回复一次，图片会自动存到这里。', false));
             return;
         }
-        for (const group of groupByDay(filtered)) {
+        for (const group of groupByDay(visibleRecords)) {
             const head = document.createElement('div');
             head.className = 'oair-gallery-day';
             const label = document.createElement('b');
@@ -287,6 +317,29 @@ export function createGallery(root, { openLightbox } = {}) {
         }
     };
     for (const input of root.querySelectorAll('[data-gallery-filter]')) input.addEventListener('change', render);
+    selectAll.addEventListener('change', () => {
+        selected.clear();
+        if (selectAll.checked) {
+            for (const record of visibleRecords) selected.add(record.id);
+        }
+        for (const checkbox of root.querySelectorAll('.oair-tile-selection input')) {
+            checkbox.checked = selectAll.checked;
+        }
+        updateSelectionControls();
+    });
+    download.addEventListener('click', () => {
+        const link = document.createElement('a');
+        link.hidden = true;
+        root.append(link);
+        for (const record of visibleRecords) {
+            if (!selected.has(record.id)) continue;
+            link.href = record.imagePath;
+            link.download = new URL(link.href).pathname.split('/').pop();
+            link.click();
+        }
+        link.remove();
+        setStatus(`已发起 ${selected.size} 张图片的下载`, 'ok');
+    });
     find('#oair_gallery_clear')?.addEventListener('click', event => {
         event.preventDefault();
         event.stopPropagation();
@@ -312,6 +365,10 @@ export function createGallery(root, { openLightbox } = {}) {
                 render();
             } catch (error) {
                 loaded = false;
+                records = [];
+                visibleRecords = [];
+                selected.clear();
+                updateSelectionControls();
                 find('#oair_gallery_count').textContent = '0';
                 box.replaceChildren(emptyBox(error.message, false));
                 throw error;
