@@ -53,7 +53,7 @@ export function getChatMessages(range, { hide_state } = {}) {
     })).filter(message => hide_state !== 'unhidden' || !message.is_hidden);
 }
 
-export async function setChatMessages(messages) {
+export async function setChatMessages(messages, { canSave } = {}) {
     const context = SillyTavern.getContext();
     for (const { message_id, message } of messages) {
         const entry = context.chat[message_id];
@@ -63,7 +63,7 @@ export async function setChatMessages(messages) {
         context.updateMessageBlock(message_id, entry);
         await context.eventSource.emit(context.eventTypes.MESSAGE_UPDATED, message_id);
     }
-    await context.saveChat();
+    if (!canSave || canSave()) await context.saveChat();
 }
 
 export function injectPrompts(prompts) {

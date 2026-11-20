@@ -27,7 +27,13 @@
     <label class="oair-check"><input data-oair-setting="processAssistantMessages" type="checkbox">监听 assistant 回复并自动生图</label>
     <label class="oair-check"><input data-oair-setting="autoFallbackWhenNoPic" type="checkbox">没有 &lt;pic&gt; 标签时自动补救生成提示词</label>
     <label class="oair-check"><input data-oair-setting="removePicTag" type="checkbox">提取后移除 &lt;pic&gt; 标签</label>
-    <label class="oair-check"><input data-oair-setting="appendImageToMessage" type="checkbox">生成成功后写回当前聊天楼层</label>
+    <label class="oair-field">
+      <span>自动生图完成后</span>
+      <select data-oair-setting="appendImageToMessage">
+        <option value="embed">保存到图库并嵌入消息</option>
+        <option value="gallery">仅保存到图库，不嵌入</option>
+      </select>
+    </label>
     <div class="oair-field">
       <label>世界书式默认提示词</label>
       <textarea data-oair-setting="mainPrompt" rows="12" placeholder="这里的内容会在生成前注入给主模型。"></textarea>

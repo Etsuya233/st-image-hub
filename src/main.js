@@ -31,7 +31,10 @@ const state = {
   settings: { ...defaultSettings },
   logs: [],
   disposers: [],
-  inFlightMessages: new Set(),
+  autoImageQueue: [],
+  activeAutoImage: null,
+  autoImageDrainTimer: null,
+  autoImageEpoch: 0,
   currentRun: null,
   panel: null,
   entries: null,
@@ -1123,15 +1126,17 @@ function imageMarkdown(url) {
   return `![Image Hub](${safeUrl})`;
 }
 
-async function updateMessageWithImage(messageId, cleanedMessage, imageUrls) {
+async function updateMessageWithImage(messageId, cleanedMessage, imageUrls, canWrite) {
   if (!state.settings.appendImageToMessage) return;
   const message = `${cleanedMessage ? `${cleanedMessage}\n\n` : ''}${imageUrls.map(imageMarkdown).join('\n\n')}`;
-  await tavern.setChatMessages([{ message_id: Number(messageId), message }]);
+  await tavern.setChatMessages([{ message_id: Number(messageId), message }], { canSave: canWrite && (() => canWrite(message)) });
   updateStep('write', 'ok', `第 ${messageId} 楼已写入 ST 图片链接`);
 }
 
 async function processPromptToImage(prompt, options = {}) {
-  if (state.currentRun) throw new Error('Image Hub 正在生成图片，请等待当前任务完成');
+  if (state.currentRun || (state.activeAutoImage && state.activeAutoImage !== options.autoJob)) {
+    throw new Error('Image Hub 正在生成图片，请等待当前任务完成');
+  }
   const runStarted = performance.now();
   const startedAt = new Date().toISOString();
   const source = options.sourceSnapshot ?? captureSource(options.messageId);
@@ -1198,9 +1203,10 @@ async function processPromptToImage(prompt, options = {}) {
       generatedGallery?.add(record);
     }
     const first = { url: records[0].imagePath };
-    if (!options.previewOnly && options.messageId != null) {
-      if (sourceIsCurrent(source, options.cleanedMessage)) {
-        await updateMessageWithImage(options.messageId, options.cleanedMessage ?? '', records.map(r => r.imagePath));
+    if (!options.previewOnly && options.messageId != null && state.settings.appendImageToMessage) {
+      if (options.autoJob ? autoImageSourceIsCurrent(options.autoJob, options.cleanedMessage) : sourceIsCurrent(source, options.cleanedMessage)) {
+        await updateMessageWithImage(options.messageId, options.cleanedMessage ?? '', records.map(r => r.imagePath),
+          options.autoJob ? text => autoImageSourceIsCurrent(options.autoJob, text) : undefined);
       } else {
         addLog('warn', '来源聊天或楼层内容已变化，图片已保存到图库，未写回聊天');
       }
@@ -1237,6 +1243,7 @@ async function processPromptToImage(prompt, options = {}) {
     throw error;
   } finally {
     state.currentRun = null;
+    scheduleAutoImageDrain();
   }
 }
 
@@ -1263,98 +1270,99 @@ async function onGenerationAfterCommands(...args) {
   }
 }
 
-async function onMessageReceived(messageIdLike, ...args) {
+function autoImageSourceIsCurrent(job, expectedMessage = job.message.message) {
+  if (job.epoch !== state.autoImageEpoch) return false;
+  return SillyTavern.getContext().chat[job.messageId] === job.entry
+    && sourceIsCurrent(job.sourceSnapshot, expectedMessage);
+}
+
+function clearAutoImageQueue() {
+  state.autoImageQueue.length = 0;
+  state.autoImageEpoch++;
+  clearTimeout(state.autoImageDrainTimer);
+  state.autoImageDrainTimer = null;
+}
+
+function scheduleAutoImageDrain() {
+  if (!state.autoImageQueue.length || state.activeAutoImage || state.currentRun || state.autoImageDrainTimer !== null) return;
+  state.autoImageDrainTimer = setTimeout(() => {
+    state.autoImageDrainTimer = null;
+    void drainAutoImageQueue();
+  }, 0);
+}
+
+async function drainAutoImageQueue() {
+  if (state.activeAutoImage || state.currentRun || !state.autoImageQueue.length) return;
+  const job = state.autoImageQueue.shift();
+  state.activeAutoImage = job;
+  try {
+    if (state.settings.enabled && state.settings.processAssistantMessages && autoImageSourceIsCurrent(job)) {
+      await runAutoImageJob(job);
+    }
+  } catch (error) {
+    addLog('error', '自动处理聊天图片失败', { messageId: job.messageId, error: error.message, stack: error.stack });
+    setStatus(`自动处理失败：${error.message}`, 'error');
+  } finally {
+    state.activeAutoImage = null;
+    scheduleAutoImageDrain();
+  }
+}
+
+function onMessageReceived(messageIdLike, ...args) {
   const messageId = Number(messageIdLike);
   if (!state.settings.enabled || !state.settings.processAssistantMessages) return;
   if (!Number.isFinite(messageId)) {
     addLog('warn', 'MESSAGE_RECEIVED 的楼层号不是数字，跳过', { messageIdLike, args });
     return;
   }
-  if (state.inFlightMessages.has(messageId)) return;
-  state.inFlightMessages.add(messageId);
 
-  try {
-    resetSteps();
-    setStatus(`收到第 ${messageId} 楼，正在检查图片标签...`, 'running');
-    updateStep('message', 'running', `读取第 ${messageId} 楼`);
+  const message = tavern.getChatMessages(messageId)?.[0];
+  if (message?.role !== 'assistant') return;
+  const entry = SillyTavern.getContext().chat[messageId];
+  const isSameReply = job => job?.epoch === state.autoImageEpoch && job.entry === entry
+    && job.sourceSnapshot.chat.message.swipe_id === entry.swipe_id
+    && (job.message.message === message.message || job.cleanedMessage === message.message);
+  if (isSameReply(state.activeAutoImage) || state.autoImageQueue.some(isSameReply)) return;
 
-    const messages = tavern.getChatMessages(messageId, { include_swipes: false });
-    const message = messages?.[0];
-    if (!message) {
-      updateStep('message', 'fail', `第 ${messageId} 楼不存在`);
-      addLog('warn', '未读取到聊天消息', { messageId, args });
-      return;
-    }
-    updateStep('message', 'ok', `role=${message.role}, name=${message.name || ''}`);
-    addLog('info', '读取聊天消息成功', { messageId, message });
+  state.autoImageQueue.push({ epoch: state.autoImageEpoch, messageId, entry, message, sourceSnapshot: captureSource(messageId) });
+  scheduleAutoImageDrain();
+}
 
-    if (message.role !== 'assistant') {
-      addLog('info', '不是 assistant 消息，跳过图片处理', { messageId, role: message.role });
-      return;
-    }
+async function runAutoImageJob(job) {
+  const { messageId, message, sourceSnapshot } = job;
+  resetSteps();
+  setStatus(`收到第 ${messageId} 楼，正在检查图片标签...`, 'running');
+  updateStep('message', 'ok', `已读取第 ${messageId} 楼，name=${message.name || ''}`);
+  updateStep('prompt', 'running', '正在提取 <pic prompt="...">');
 
-    const sourceSnapshot = captureSource(messageId);
-    updateStep('prompt', 'running', '正在提取 <pic prompt="...">');
-    const extracted = extractPicPrompts(message.message || '');
-    if (!extracted.prompts.length) {
-      if (state.settings.autoFallbackWhenNoPic) {
-        updateStep('prompt', 'running', '没有发现 <pic>，启用补救生成');
-        addLog('info', '消息中没有 pic 标签，启用补救生成', {
-          messageId,
-          text: message.message,
-        });
-        const fallbackPrompt = await generateFallbackPromptFromMessage(message);
-        await processPromptToImage(fallbackPrompt, {
-          messageId,
-          sourceSnapshot,
-          cleanedMessage: message.message || '',
-          keepSteps: true,
-          matchText: message.message || '',
-        });
-        return;
-      }
+  const extracted = extractPicPrompts(message.message || '');
+  let prompt = extracted.prompts[0];
+  let cleanedMessage = message.message || '';
+  if (!extracted.prompts.length) {
+    if (!state.settings.autoFallbackWhenNoPic) {
       updateStep('prompt', 'ok', '没有图片标签，跳过');
-      addLog('info', '消息中没有 pic 标签', { messageId, text: message.message });
       setStatus('未发现图片标签', 'info');
       return;
     }
-
-    const prompt = extracted.prompts[0];
+    updateStep('prompt', 'running', '没有发现 <pic>，启用补救生成');
+    const canContinue = () => autoImageSourceIsCurrent(job);
+    prompt = await generateFallbackPromptFromMessage(message, { historyEndId: messageId, canContinue });
+    if (!prompt || !canContinue()) return;
+  } else {
     updateStep('prompt', 'ok', `找到 ${extracted.prompts.length} 条，使用第一条`);
-    addLog('info', '已提取绘图提示词', {
-      messageId,
-      prompt,
-      allPrompts: extracted.prompts,
-      cleanedMessage: extracted.cleaned,
-    });
-
-    let cleanedMessage = state.settings.removePicTag ? extracted.cleaned : message.message;
-    let messageAlreadyCleaned = false;
     if (state.settings.removePicTag) {
-      updateStep('write', 'running', '先移除原始 pic 标签');
-      await tavern.setChatMessages([{ message_id: messageId, message: cleanedMessage }]);
-      messageAlreadyCleaned = true;
+      if (!autoImageSourceIsCurrent(job)) return;
+      job.cleanedMessage = cleanedMessage = extracted.cleaned;
+      await tavern.setChatMessages([{ message_id: messageId, message: cleanedMessage }],
+        { canSave: () => autoImageSourceIsCurrent(job, cleanedMessage) });
+      if (!autoImageSourceIsCurrent(job, cleanedMessage)) return;
       updateStep('write', 'ok', 'pic 标签已移除');
     }
-
-    await processPromptToImage(prompt, {
-      messageId,
-      sourceSnapshot,
-      cleanedMessage,
-      messageAlreadyCleaned,
-      keepSteps: true,
-      matchText: message.message || '',
-    });
-  } catch (error) {
-    addLog('error', '自动处理聊天图片失败', {
-      messageId,
-      error: error.message,
-      stack: error.stack,
-    });
-    setStatus(`自动处理失败：${error.message}`, 'error');
-  } finally {
-    state.inFlightMessages.delete(messageId);
   }
+
+  await processPromptToImage(prompt, {
+    messageId, sourceSnapshot, cleanedMessage, keepSteps: true, matchText: message.message || '', autoJob: job,
+  });
 }
 
 function readPanelSettings() {
@@ -1362,7 +1370,9 @@ function readPanelSettings() {
   qa('[data-oair-setting]').forEach(el => {
     const key = el.dataset.oairSetting;
     if (!key) return;
-    if (el.type === 'radio') {
+    if (key === 'appendImageToMessage') {
+      next[key] = el.value === 'embed';
+    } else if (el.type === 'radio') {
       if (el.checked) next[key] = el.value;
     } else if (el.type === 'checkbox') {
       next[key] = el.checked;
@@ -1531,7 +1541,9 @@ function writeSettingsToUi() {
     const key = el.dataset.oairSetting;
     if (!key) return;
     const value = state.settings[key];
-    if (el.type === 'radio') {
+    if (key === 'appendImageToMessage') {
+      el.value = value ? 'embed' : 'gallery';
+    } else if (el.type === 'radio') {
       el.checked = el.value === String(value ?? '');
     } else if (el.type === 'checkbox') {
       el.checked = Boolean(value);
@@ -1671,7 +1683,7 @@ function buildCustomApiForSummary() {
 }
 
 // 按当前预设真正启用的素材条目读取上下文，没被选中的世界书和聊天变量就不读。
-async function collectContextSections(sections, { historyEndId = null } = {}) {
+async function collectContextSections(sections, { historyEndId = null, canContinue } = {}) {
   const wanted = new Set(sections.filter(section => section !== 'reply'));
   const context = SillyTavern.getContext();
   const texts = new Map();
@@ -1712,6 +1724,7 @@ async function collectContextSections(sections, { historyEndId = null } = {}) {
   if (wanted.has('worldbook')) {
     const limit = Number(state.settings.summaryWorldbookEntryLimit);
     const activated = await tavern.getActivatedWorldInfo({ upToMessageId: historyEndId });
+    if (canContinue && !canContinue()) return texts;
     report.worldbooks = activated.map(({ world, uid, name }) => ({ world, uid, name }));
     const bookTexts = activated.slice(0, limit)
       .map(entry => `【${entry.world} / ${entry.name}】\n${clip(entry.content, 900)}`);
@@ -1809,6 +1822,7 @@ async function generatePromptByScriptContext({
   sourceLabel = 'context',
   keepSteps = false,
   historyEndId = null,
+  canContinue,
 } = {}) {
 
   if (!keepSteps) resetSteps();
@@ -1828,7 +1842,8 @@ async function generatePromptByScriptContext({
     });
 
     const sections = profileMaterialSections(profile);
-    const texts = await collectContextSections(sections, { historyEndId });
+    const texts = await collectContextSections(sections, { historyEndId, canContinue });
+    if (canContinue && !canContinue()) return null;
     const hasMaterial = Boolean(String(sourceMessage || '').trim())
       || [...texts.values()].some(text => String(text || '').trim());
     if (!hasMaterial) throw new Error('没有可用于整理的上下文或消息正文');
@@ -1883,12 +1898,14 @@ async function generatePromptByScriptContext({
   }
 }
 
-async function generateFallbackPromptFromMessage(message) {
+async function generateFallbackPromptFromMessage(message, { historyEndId, canContinue } = {}) {
   return generatePromptByScriptContext({
     profile: getFallbackProfile(),
     sourceMessage: String(message?.message || '').replace(/<pic[^>]*>/g, '').trim(),
     sourceLabel: 'fallback',
     keepSteps: true,
+    historyEndId,
+    canContinue,
   });
 }
 
@@ -3285,7 +3302,10 @@ export async function init() {
   const clearInjection = () => tavern.uninjectPrompts([INJECT_ID]);
   bindEvent(tavernEvents.GENERATION_ENDED, clearInjection);
   bindEvent(tavernEvents.GENERATION_STOPPED, clearInjection);
-  bindEvent(tavernEvents.CHAT_CHANGED, clearInjection);
+  bindEvent(tavernEvents.CHAT_CHANGED, () => {
+    clearAutoImageQueue();
+    clearInjection();
+  });
   const onPageHide = () => destroy('pagehide');
   window.addEventListener('pagehide', onPageHide, { once: true });
   state.disposers.push(() => window.removeEventListener('pagehide', onPageHide));
@@ -3320,6 +3340,7 @@ export async function init() {
 }
 
 function destroy(reason = 'manual') {
+  clearAutoImageQueue();
   delete W.ST_IMAGE_HUB_API;
   try {
     tavern.uninjectPrompts([INJECT_ID]);
