@@ -137,6 +137,7 @@ export const defaultSettings = {
   enabled: true,
   injectMainPrompt: true,
   processAssistantMessages: true,
+  delayAutoImageOneReply: false,
   autoFallbackWhenNoPic: true,
   removePicTag: true,
   appendImageToMessage: true,

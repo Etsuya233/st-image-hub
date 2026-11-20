@@ -19,14 +19,14 @@ function fixture() {
   let chatId = 'A';
   const state = {
     settings: { enabled: true, processAssistantMessages: true, appendImageToMessage: true, serviceUrl: 'mock' },
-    autoImageQueue: [], activeAutoImage: null, autoImageDrainTimer: null, autoImageEpoch: 0, currentRun: null,
+    autoImageQueue: [], activeAutoImage: null, autoImageDrainTimer: null, autoImageEpoch: 0, autoImageSeen: new WeakSet(), currentRun: null,
   };
   const captureSource = messageId => ({ chat: { id: chatId, messageId, message: { ...chat[messageId] } } });
   const context = vm.createContext({
     state, captureSource, performance, generatedGallery: null,
     SillyTavern: { getContext: () => ({ chat }) },
     tavern: {
-      getChatMessages: id => chat[id] ? [{ role: 'assistant', message: chat[id].mes }] : [],
+      getChatMessages: id => chat[id] ? [{ role: chat[id].is_user ? 'user' : chat[id].is_system ? 'system' : 'assistant', message: chat[id].mes }] : [],
       setChatMessages: async ([{ message_id, message }]) => {
         writes.push([chatId, message_id, message]);
         chat[message_id].mes = message;
@@ -68,8 +68,8 @@ function fixture() {
     current.forEach(callback => callback());
     await new Promise(resolve => setImmediate(resolve));
   }
-  function receive(mes) {
-    chat.push({ mes, swipe_id: 0 });
+  function receive(mes, is_user = false) {
+    chat.push({ mes, swipe_id: 0, is_user });
     return context.onMessageReceived(chat.length - 1);
   }
   return {
@@ -82,6 +82,7 @@ function fixture() {
       return old;
     },
     restore(old) { chatId = 'A'; chat = old; context.clearAutoImageQueue(); },
+    swipe(index) { chat[index].swipe_id++; },
     replace(index, replacement) { chat[index] = replacement; },
   };
 }
@@ -185,4 +186,86 @@ test('两种模式沿用布尔设置，且和自动生图开关互不影响', ()
   select.value = 'embed';
   assert.equal(context.readPanelSettings().appendImageToMessage, true);
   assert.equal(context.readPanelSettings().processAssistantMessages, true);
+});
+
+for (const delayed of [false, true]) {
+  for (const embed of [false, true]) {
+    test(`正常/延后和保存模式独立组合 delay=${delayed} embed=${embed}`, async () => {
+      const f = fixture();
+      Object.assign(f.state.settings, { delayAutoImageOneReply: delayed, appendImageToMessage: embed });
+      f.receive('question', true);
+      f.receive('pic:first');
+      await f.tick();
+      assert.equal(f.requests.length, delayed ? 0 : 1);
+      f.receive('follow up', true);
+      await f.tick();
+      assert.equal(f.requests.length, delayed ? 0 : 1);
+      if (delayed) { f.receive('pic:second'); await f.tick(); }
+      assert.deepEqual(f.requests, ['first']);
+      f.pending.shift().finish();
+      await f.tick();
+      assert.equal(f.saved.length, 1);
+      assert.deepEqual(f.writes.map(([, id]) => id), embed ? [1] : []);
+      f.context.onMessageReceived(delayed ? 3 : 1);
+      f.swipe(delayed ? 3 : 1);
+      f.context.onMessageReceived(delayed ? 3 : 1);
+      await f.tick();
+      assert.deepEqual(f.requests, ['first']);
+    });
+  }
+}
+
+test('延后模式慢请求保持串行，切换对话清队列并禁止切回补贴', async () => {
+  const f = fixture();
+  f.state.settings.delayAutoImageOneReply = true;
+  f.receive('pic:first');
+  f.receive('pic:second');
+  await f.tick();
+  f.receive('pic:third');
+  f.context.onMessageReceived(2);
+  await f.tick();
+  assert.deepEqual(f.requests, ['first']);
+  const original = f.switchChat('B');
+  f.restore(original);
+  f.context.onMessageReceived(2);
+  f.pending.shift().finish();
+  await f.tick();
+  await f.tick();
+  assert.deepEqual(f.requests, ['first']);
+  assert.deepEqual(f.saved, [['/first.png', 'A']]);
+  assert.deepEqual(f.writes, []);
+});
+
+test('请求期间 swipe 只保存，重复事件和失败不自动收费重试', async () => {
+  const f = fixture();
+  f.receive('pic:first');
+  f.context.onMessageReceived(0);
+  await f.tick();
+  f.swipe(0);
+  f.context.onMessageReceived(0);
+  f.pending.shift().finish();
+  await f.tick();
+  assert.equal(f.saved.length, 1);
+  assert.deepEqual(f.writes, []);
+  f.receive('pic:failure');
+  await f.tick();
+  f.pending.shift().fail();
+  await f.tick();
+  f.context.onMessageReceived(1);
+  await f.tick();
+  assert.deepEqual(f.requests, ['first', 'failure']);
+});
+
+test('延后模式自动总开关关闭时不入队，旧楼层事件不触发', async () => {
+  const f = fixture();
+  f.state.settings.delayAutoImageOneReply = true;
+  f.state.settings.processAssistantMessages = false;
+  f.receive('pic:first');
+  f.receive('pic:second');
+  await f.tick();
+  assert.deepEqual(f.requests, []);
+  f.state.settings.processAssistantMessages = true;
+  f.context.onMessageReceived(0);
+  await f.tick();
+  assert.deepEqual(f.requests, []);
 });

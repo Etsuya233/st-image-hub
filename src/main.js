@@ -35,6 +35,7 @@ const state = {
   activeAutoImage: null,
   autoImageDrainTimer: null,
   autoImageEpoch: 0,
+  autoImageSeen: new WeakSet(),
   currentRun: null,
   panel: null,
   entries: null,
@@ -1309,20 +1310,29 @@ async function drainAutoImageQueue() {
 }
 
 function onMessageReceived(messageIdLike, ...args) {
-  const messageId = Number(messageIdLike);
+  let messageId = Number(messageIdLike);
   if (!state.settings.enabled || !state.settings.processAssistantMessages) return;
-  if (!Number.isFinite(messageId)) {
-    addLog('warn', 'MESSAGE_RECEIVED 的楼层号不是数字，跳过', { messageIdLike, args });
+  if (!Number.isInteger(messageId) || messageId < 0) {
+    addLog('warn', 'MESSAGE_RECEIVED 的楼层号不是有效整数，跳过', { messageIdLike, args });
     return;
   }
 
+  const chat = SillyTavern.getContext().chat;
+  if (tavern.getChatMessages(messageId)?.[0]?.role !== 'assistant') return;
+  // Only a completed newest reply can trigger work; replaying older events cannot.
+  if (chat.slice(messageId + 1).some(entry => !entry.is_user && !entry.is_system)) return;
+  if (state.settings.delayAutoImageOneReply) {
+    messageId--;
+    while (messageId >= 0 && tavern.getChatMessages(messageId)?.[0]?.role !== 'assistant') messageId--;
+    if (messageId < 0) return;
+  }
   const message = tavern.getChatMessages(messageId)?.[0];
-  if (message?.role !== 'assistant') return;
-  const entry = SillyTavern.getContext().chat[messageId];
-  const isSameReply = job => job?.epoch === state.autoImageEpoch && job.entry === entry
-    && job.sourceSnapshot.chat.message.swipe_id === entry.swipe_id
-    && (job.message.message === message.message || job.cleanedMessage === message.message);
-  if (isSameReply(state.activeAutoImage) || state.autoImageQueue.some(isSameReply)) return;
+  const entry = chat[messageId];
+  if (!entry || !message) return;
+  // Claim once per message object, including swipes, failures and completed jobs.
+  // Keep claims across chat changes so returning cannot resubmit in-flight work.
+  if (state.autoImageSeen.has(entry)) return;
+  state.autoImageSeen.add(entry);
 
   state.autoImageQueue.push({ epoch: state.autoImageEpoch, messageId, entry, message, sourceSnapshot: captureSource(messageId) });
   scheduleAutoImageDrain();
