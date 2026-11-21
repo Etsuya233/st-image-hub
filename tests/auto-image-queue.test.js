@@ -48,7 +48,7 @@ function fixture() {
     callImageApi: prompt => {
       requests.push(prompt);
       return new Promise((resolve, reject) => pending.push({
-        finish: () => resolve({ data: { url: `/${prompt}.png` }, request: { body: { prompt } } }),
+        finish: () => resolve({ data: { url: `/${prompt}.png` }, request: { body: { prompt }, referenceContext: { characters: [], images: [] } } }),
         fail: () => reject(new Error('mock failure')),
       }));
     },

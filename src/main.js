@@ -655,7 +655,13 @@ function fillPromptTemplate(template, prompt, referenceContext) {
   let result = String(template || '');
   for (const [token, value] of Object.entries(replacements)) result = result.replaceAll(token, value);
   if (!result.includes(prompt)) result = `${result}\n\n${prompt}`;
-  return result.trim();
+  const orderedReferences = referenceContext.images.map((image, index) => `图${index + 1}：${image.characterName}`);
+  return [
+    '参考图按上传顺序编号。请按下列对应关系保留每个角色各自的脸、发型和服装特征。',
+    ...orderedReferences,
+    '',
+    result.trim(),
+  ].join('\n');
 }
 
 function resolveReferenceRequestMode(hasReferences) {
@@ -668,11 +674,20 @@ function resolveReferenceRequestMode(hasReferences) {
   return 'json-reference';
 }
 
-function buildImageRequest(prompt, referenceContext = { characters: [], images: [] }) {
+function buildImageRequest(prompt, matchedReferences = { characters: [], images: [] }) {
   const settings = state.settings;
   const normalized = normalizeImagePromptForBackend(prompt);
   const backendPrompt = normalized.backendPrompt;
-  const hasReferences = Boolean(referenceContext.images?.length);
+  const hasReferences = Boolean(matchedReferences.images.length);
+  const mode = resolveReferenceRequestMode(hasReferences);
+  const referenceField = String(settings.referenceJsonField || 'images').trim() || 'images';
+  const singleReference = mode === 'json-reference' && /^(image|reference_image)$/i.test(referenceField);
+  const referenceContext = singleReference
+    ? {
+      characters: matchedReferences.characters.filter(character => character.id === matchedReferences.images[0].characterId),
+      images: matchedReferences.images.slice(0, 1),
+    }
+    : matchedReferences;
   const finalPrompt = hasReferences
     ? fillPromptTemplate(settings.referencePromptTemplate, backendPrompt, referenceContext)
     : settings.promptTemplate.includes('{{prompt}}')
@@ -682,7 +697,6 @@ function buildImageRequest(prompt, referenceContext = { characters: [], images: 
   const url = hasReferences && settings.referenceServiceUrl
     ? settings.referenceServiceUrl
     : settings.serviceUrl;
-  const mode = resolveReferenceRequestMode(hasReferences);
   let body;
   let fetchBody;
   let bodyForLog;
@@ -759,9 +773,8 @@ function buildImageRequest(prompt, referenceContext = { characters: [], images: 
         };
     body = { ...baseBody, ...extraBody };
     if (hasReferences) {
-      const field = String(settings.referenceJsonField || 'images').trim() || 'images';
       const values = referenceContext.images.map(image => image.dataUrl);
-      body[field] = /^(image|reference_image)$/i.test(field) ? values[0] : values;
+      body[referenceField] = singleReference ? values[0] : values;
       body.reference_characters = referenceContext.characters.map(character => character.name);
     }
     fetchBody = JSON.stringify(body);
@@ -1154,7 +1167,7 @@ async function processPromptToImage(prompt, options = {}) {
 
     const referenceContext = resolveReferenceContext(`${prompt}\n${options.matchText || ''}`);
     const referenceDetail = referenceContext.images.length
-      ? `匹配 ${referenceContext.characters.map(item => item.name).join('、')}，附带 ${referenceContext.images.length} 张参考图`
+      ? `匹配 ${referenceContext.characters.map(item => item.name).join('、')}，选出 ${referenceContext.images.length} 张参考图`
       : '未匹配到可用角色参考图，使用文生图';
     updateStep('prompt', 'ok', `${clip(prompt, 120)}；${referenceDetail}`);
     addLog('info', '角色参考图匹配完成', {
@@ -1176,6 +1189,7 @@ async function processPromptToImage(prompt, options = {}) {
       })),
     });
     const result = await callImageApi(prompt.trim(), referenceContext);
+    const submittedReferences = result.request.referenceContext;
 
     const completedAt = new Date().toISOString();
     updateStep('parse', 'running', '正在解析图片链接');
@@ -1198,7 +1212,7 @@ async function processPromptToImage(prompt, options = {}) {
         attempts: result.attempt, prompt, submittedPrompt,
         parameters: { model: result.request.body.model, size: result.request.body.size,
           n: result.request.body.n, mode: result.request.mode },
-        references: referenceContext.images.map(({ id, characterName, fileName }) => ({ id, characterName, fileName })),
+        references: submittedReferences.images.map(({ id, characterName, fileName }) => ({ id, characterName, fileName })),
       });
       records.push(record);
       generatedGallery?.add(record);
@@ -1227,8 +1241,8 @@ async function processPromptToImage(prompt, options = {}) {
       records,
       imageUrl: first.url,
       elapsedMs: totalMs,
-      referenceCharacters: referenceContext.characters.map(item => item.name),
-      referenceImageCount: referenceContext.images.length,
+      referenceCharacters: submittedReferences.characters.map(item => item.name),
+      referenceImageCount: submittedReferences.images.length,
     };
   } catch (error) {
     const totalMs = performance.now() - runStarted;

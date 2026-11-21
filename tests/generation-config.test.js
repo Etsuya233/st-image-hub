@@ -87,7 +87,7 @@ test('multipart 由浏览器生成 Content-Type，显式和自动图生图模式
 
 // 在实际请求组装入口验证配置确实进入 JSON / multipart 请求，避免只测试独立辅助函数。
 const source = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
-const requestCode = source.slice(source.indexOf('function resolveReferenceRequestMode('), source.indexOf('async function fetchWithTimeout('));
+const requestCode = source.slice(source.indexOf('function fillPromptTemplate('), source.indexOf('async function fetchWithTimeout('));
 test('设置与请求日志隐藏全部自定义头，任意名称的凭据均不会写入日志', () => {
   const logging = source.slice(source.indexOf('function maskSecret('), source.indexOf('function safeStringify('));
   const context = vm.createContext({ clip: value => value });
@@ -102,7 +102,6 @@ test('实际请求组装使用自定义鉴权和参考图，multipart 正文保�
   const context = vm.createContext({
     state: { settings: current }, imageRequestHeaders, FormData,
     normalizeImagePromptForBackend: prompt => ({ backendPrompt: prompt }),
-    fillPromptTemplate: (_template, prompt) => prompt,
     parseJsonLoose: text => text ? JSON.parse(text) : {},
     dataUrlToBlob: () => new Blob(['test-image'], { type: 'image/png' }),
     referenceFileName: filename => filename,
@@ -113,32 +112,35 @@ test('实际请求组装使用自定义鉴权和参考图，multipart 正文保�
   assert.equal(json.headers['content-type'], 'application/json');
   assert.equal(JSON.parse(json.fetchBody).model, current.model);
   current.referenceRequestMode = 'multipart-edit';
-  const request = vm.runInContext('buildImageRequest("draw", { characters: [], images: [{ dataUrl: "test", fileName: "ref.png" }] })', context);
+  const request = vm.runInContext('buildImageRequest("draw", { characters: [{ id: "a", name: "秋元悦也" }], images: [{ characterId: "a", characterName: "秋元悦也", dataUrl: "test", fileName: "ref.png" }] })', context);
   assert.equal(request.headers.authorization, 'Custom live-test');
   assert.equal(Object.hasOwn(request.headers, 'content-type'), false);
   assert.equal(await request.fetchBody.get('image').text(), 'test-image');
+  assert.match(request.fetchBody.get('prompt'), /图1：秋元悦也/);
+  assert.doesNotMatch(JSON.parse(json.fetchBody).prompt, /参考图按上传顺序编号/);
   const encoded = new Request('https://example.com', { method: 'POST', headers: request.headers, body: request.fetchBody });
   assert.match(encoded.headers.get('content-type'), /^multipart\/form-data; boundary=/);
 });
 
-test('自动识别 edits 接口，多张参考图使用数组字段上传', async () => {
+test('按实际附件顺序标注角色，多张参考图使用 multipart 数组字段上传', async () => {
   const current = settings();
   current.referenceRequestMode = 'auto';
   current.referenceServiceUrl = 'https://api.openai.com/v1/images/edits';
+  current.referencePromptTemplate = '参考角色：{{characters}}，共 {{reference_count}} 张。\n{{prompt}}';
   const context = vm.createContext({
     state: { settings: current }, imageRequestHeaders, FormData,
     normalizeImagePromptForBackend: prompt => ({ backendPrompt: prompt }),
-    fillPromptTemplate: (_template, prompt) => prompt,
     parseJsonLoose: text => text ? JSON.parse(text) : {},
     dataUrlToBlob: dataUrl => new Blob([dataUrl], { type: 'image/png' }),
     referenceFileName: filename => filename,
   });
   vm.runInContext(requestCode, context);
   const request = vm.runInContext(`buildImageRequest("draw", {
-    characters: [],
+    characters: [{ id: "a", name: "秋元悦也" }, { id: "b", name: "方亦楷" }],
     images: [
-      { dataUrl: "first-image", fileName: "first.png" },
-      { dataUrl: "second-image", fileName: "second.png" },
+      { characterId: "a", characterName: "秋元悦也", dataUrl: "first-image", fileName: "first.png" },
+      { characterId: "a", characterName: "秋元悦也", dataUrl: "second-image", fileName: "second.png" },
+      { characterId: "b", characterName: "方亦楷", dataUrl: "third-image", fileName: "third.png" },
     ],
   })`, context);
   assert.equal(request.url, current.referenceServiceUrl);
@@ -146,7 +148,50 @@ test('自动识别 edits 接口，多张参考图使用数组字段上传', asyn
   const form = await encoded.formData();
   assert.equal(form.getAll('image').length, 0, '多图不能重复提交单值 image 参数');
   const images = form.getAll('image[]');
-  assert.equal(images.length, 2);
-  assert.deepEqual(images.map(image => image.name), ['first.png', 'second.png']);
-  assert.deepEqual(await Promise.all(images.map(image => image.text())), ['first-image', 'second-image']);
+  assert.deepEqual(images.map(image => image.name), ['first.png', 'second.png', 'third.png']);
+  assert.deepEqual(await Promise.all(images.map(image => image.text())), ['first-image', 'second-image', 'third-image']);
+  const prompt = form.get('prompt').replaceAll('\r\n', '\n');
+  assert.match(prompt, /图1：秋元悦也\n图2：秋元悦也\n图3：方亦楷/);
+  assert.match(prompt, /参考角色：秋元悦也、方亦楷，共 3 张。\ndraw$/);
+});
+
+test('多模态和 JSON 参考图编号一致，JSON 单值字段只标注实际发送的图', () => {
+  const current = settings();
+  const context = vm.createContext({
+    state: { settings: current }, imageRequestHeaders,
+    normalizeImagePromptForBackend: prompt => ({ backendPrompt: prompt }),
+    parseJsonLoose: () => ({}),
+  });
+  vm.runInContext(requestCode, context);
+  const build = () => vm.runInContext(`buildImageRequest("draw", {
+    characters: [
+      { id: "a", name: "秋元悦也", notes: "短袖" },
+      { id: "b", name: "方亦楷", notes: "长袖" },
+    ],
+    images: [
+      { characterId: "a", characterName: "秋元悦也", dataUrl: "first-image" },
+      { characterId: "b", characterName: "方亦楷", dataUrl: "second-image" },
+    ],
+  })`, context);
+
+  current.referenceRequestMode = 'chat-multimodal';
+  const content = JSON.parse(build().fetchBody).messages[0].content;
+  assert.match(content[0].text, /图1：秋元悦也\n图2：方亦楷/);
+  assert.deepEqual(content.slice(1).map(part => part.image_url.url), ['first-image', 'second-image']);
+
+  current.referenceRequestMode = 'json-reference';
+  current.referencePromptTemplate = '{{characters}}｜{{reference_count}}｜{{reference_notes}}\n{{prompt}}';
+  const array = JSON.parse(build().fetchBody);
+  assert.deepEqual(array.images, ['first-image', 'second-image']);
+  assert.match(array.prompt, /图1：秋元悦也\n图2：方亦楷/);
+
+  current.referenceJsonField = 'reference_image';
+  const single = build();
+  const body = JSON.parse(single.fetchBody);
+  assert.equal(body.reference_image, 'first-image');
+  assert.deepEqual(body.reference_characters, ['秋元悦也']);
+  assert.match(body.prompt, /图1：秋元悦也/);
+  assert.match(body.prompt, /秋元悦也｜1｜秋元悦也：短袖\ndraw$/);
+  assert.doesNotMatch(body.prompt, /图2|方亦楷|长袖/);
+  assert.equal(single.referenceContext.images.length, 1);
 });
